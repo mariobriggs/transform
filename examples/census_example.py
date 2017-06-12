@@ -30,6 +30,7 @@ from apache_beam.io import tfrecordio
 from tensorflow.contrib import learn
 from tensorflow.contrib import lookup
 from tensorflow.contrib.layers import feature_column
+from tensorflow_transform.beam import tft_beam_io
 from tensorflow_transform.beam import impl as beam_impl
 from tensorflow_transform.beam.tft_beam_io import beam_metadata_io
 from tensorflow_transform.coders import csv_coder
@@ -63,10 +64,42 @@ NUM_TRAIN_INSTANCES = 32561
 NUM_TEST_INSTANCES = 16281
 BUCKET_SIZES = [9, 17, 8, 15, 17, 6, 3, 43]
 
+WKCLASS_COL = 'workclass'
+EDN_COL = 'education'
+MSTAT_COL = 'marital-status'
+OCC_COL = 'occupation'
+REL_COL = 'relationship'
+RACE_COL = 'race'
+SEX_COL = 'sex'
+NCTRY_COL = 'native-country'
+AGE_COLUMN = 'age'
+EDNUM_COLUMN = 'education-num'
+CGAIN_COLUMN = 'capital-gain'
+CLOSS_COLUMN = 'capital-loss'
+HPW_COLUMN = 'hours-per-week'
+
+input_schema = dataset_schema.from_feature_spec({
+    WKCLASS_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
+    EDN_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
+    MSTAT_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
+    OCC_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
+    REL_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
+    RACE_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
+    SEX_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
+    NCTRY_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
+    AGE_COLUMN: tf.FixedLenFeature(shape=[], dtype=tf.float32),
+    EDNUM_COLUMN: tf.FixedLenFeature(shape=[], dtype=tf.float32),
+    CGAIN_COLUMN: tf.FixedLenFeature(shape=[], dtype=tf.float32),
+    CLOSS_COLUMN: tf.FixedLenFeature(shape=[], dtype=tf.float32),
+    HPW_COLUMN: tf.FixedLenFeature(shape=[], dtype=tf.float32),
+    LABEL_COLUMN: tf.FixedLenFeature(shape=[], dtype=tf.string)
+})
+raw_metadata = dataset_metadata.DatasetMetadata(schema=input_schema)
+
 
 def transform_data(train_data_file, test_data_file,
                    transformed_train_filebase, transformed_test_filebase,
-                   transformed_metadata_dir):
+                   transformed_metadata_dir, transform_graph_dir):
   """Transform the data and write out as a TFRecord of Example protos.
 
   Read in the data using the CSV reader, and transform it using a
@@ -82,6 +115,8 @@ def transform_data(train_data_file, test_data_file,
     transformed_test_filebase: Base filename for transformed test data shards
     transformed_metadata_dir: Directory where metadata for transformed data
         should be written
+    transform_graph_dir: dir where the beam transform tf graph should be
+        written
   """
   raw_data_schema = {
       key: dataset_schema.ColumnSchema(
@@ -96,7 +131,6 @@ def transform_data(train_data_file, test_data_file,
   raw_data_schema[LABEL_COLUMN] = dataset_schema.ColumnSchema(
       tf.string, [], dataset_schema.FixedColumnRepresentation())
   raw_data_schema = dataset_schema.Schema(raw_data_schema)
-  raw_data_metadata = dataset_metadata.DatasetMetadata(raw_data_schema)
 
   def preprocessing_fn(inputs):
     """Preprocess input columns into transformed columns."""
@@ -153,9 +187,15 @@ def transform_data(train_data_file, test_data_file,
       # Combine data and schema into a dataset tuple.  Note that we already used
       # the schema to read the CSV data, but we also need it to interpret
       # raw_data.
-      raw_dataset = (raw_data, raw_data_metadata)
+      raw_dataset = (raw_data, raw_metadata)
       transformed_dataset, transform_fn = (
           raw_dataset | beam_impl.AnalyzeAndTransformDataset(preprocessing_fn))
+
+      #write the beam transform to disk
+      _ = (transform_fn
+       | 'WriteTransformFn' >> tft_beam_io.WriteTransformFn(transform_graph_dir))
+
+
       transformed_data, transformed_metadata = transformed_dataset
 
       _ = transformed_data | 'WriteTrainData' >> tfrecordio.WriteToTFRecord(
@@ -176,7 +216,7 @@ def transform_data(train_data_file, test_data_file,
           | 'RemoveTrailingPeriodsTestData' >> beam.Map(lambda line: line[:-1])
           | 'DecodeTestData' >> beam.Map(converter.decode))
 
-      raw_test_dataset = (raw_test_data, raw_data_metadata)
+      raw_test_dataset = (raw_test_data, raw_metadata)
 
       transformed_test_dataset = (
           (raw_test_dataset, transform_fn) | beam_impl.TransformDataset())
@@ -196,7 +236,8 @@ def transform_data(train_data_file, test_data_file,
 
 def train_and_evaluate(transformed_train_filepattern,
                        transformed_test_filepattern,
-                       transformed_metadata_dir):
+                       transformed_metadata_dir,
+                       serving_graph_dir):
   """Train the model on training data and evaluate on test data.
 
   Args:
@@ -204,6 +245,7 @@ def train_and_evaluate(transformed_train_filepattern,
         shards
     transformed_test_filepattern: File pattern for transformed test data shards
     transformed_metadata_dir: Directory containing transformed data metadata
+    serving_graph_dir: Directory to save the serving graph
 
   Returns:
     The results from the estimator's 'evaluate' method
@@ -234,6 +276,19 @@ def train_and_evaluate(transformed_train_filepattern,
       input_fn=train_input_fn,
       max_steps=TRAIN_NUM_EPOCHS * NUM_TRAIN_INSTANCES / TRAIN_BATCH_SIZE)
 
+  # Write the serving graph to disk for use in tf.serving
+  in_columns = [
+      'age', 'workclass', 'education', 'education-num',
+      'marital-status', 'occupation', 'relationship', 'race', 'sex',
+      'capital-gain', 'capital-loss', 'hours-per-week', 'native-country']
+
+  serving_input_fn = input_fn_maker.build_default_transforming_serving_input_fn(
+            raw_metadata=raw_metadata,
+            transform_savedmodel_dir=serving_graph_dir + '/transform_fn',
+            raw_label_keys=[],
+            raw_feature_keys=in_columns)
+  estimator.export_savedmodel(serving_graph_dir, serving_input_fn)
+
   # Evaluate model on test dataset.
   eval_input_fn = input_fn_maker.build_training_input_fn(
       transformed_metadata,
@@ -250,12 +305,20 @@ def main():
                       help='path to directory containing input data')
   parser.add_argument('--transformed_data_dir',
                       help='path to directory to hold transformed data')
+  parser.add_argument('--serving_graph_dir',
+                      help='path to directory to hold serving graph')
   args = parser.parse_args()
 
   if args.transformed_data_dir:
     transformed_data_dir = args.transformed_data_dir
   else:
     transformed_data_dir = tempfile.mkdtemp(dir=args.input_data_dir)
+
+  if args.serving_graph_dir:
+    serving_graph_dir = args.serving_graph_dir
+  else:
+      serving_graph_dir = tempfile.mkdtemp(dir=args.input_data_dir)
+
 
   train_data_file = os.path.join(args.input_data_dir, 'adult.data')
   test_data_file = os.path.join(args.input_data_dir, 'adult.test')
@@ -266,13 +329,18 @@ def main():
   transformed_metadata_dir = os.path.join(transformed_data_dir, 'metadata')
 
   transform_data(train_data_file, test_data_file, transformed_train_filebase,
-                 transformed_test_filebase, transformed_metadata_dir)
+                 transformed_test_filebase, transformed_metadata_dir,
+                 serving_graph_dir)
 
   results = train_and_evaluate(transformed_train_filebase + '*',
                                transformed_test_filebase + '*',
-                               transformed_metadata_dir)
+                               transformed_metadata_dir,
+                               serving_graph_dir)
+
+  pprint.pprint(results)
 
   pprint.pprint(results)
 
 if __name__ == '__main__':
   main()
+
