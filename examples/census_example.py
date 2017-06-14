@@ -115,8 +115,7 @@ def transform_data(train_data_file, test_data_file,
     transformed_test_filebase: Base filename for transformed test data shards
     transformed_metadata_dir: Directory where metadata for transformed data
         should be written
-    transform_graph_dir: dir where the beam transform tf graph should be
-        written
+    transform_graph_dir: dir where the beam tf graph should be written
   """
   raw_data_schema = {
       key: dataset_schema.ColumnSchema(
@@ -191,9 +190,10 @@ def transform_data(train_data_file, test_data_file,
       transformed_dataset, transform_fn = (
           raw_dataset | beam_impl.AnalyzeAndTransformDataset(preprocessing_fn))
 
-      #write the beam transform to disk
-      _ = (transform_fn
-       | 'WriteTransformFn' >> tft_beam_io.WriteTransformFn(transform_graph_dir))
+      #write the beam transform to disk if asked for
+      if not transform_graph_dir is None:
+        _ = (transform_fn
+           | 'WriteTransformFn' >> tft_beam_io.WriteTransformFn(transform_graph_dir))
 
 
       transformed_data, transformed_metadata = transformed_dataset
@@ -282,12 +282,13 @@ def train_and_evaluate(transformed_train_filepattern,
       'marital-status', 'occupation', 'relationship', 'race', 'sex',
       'capital-gain', 'capital-loss', 'hours-per-week', 'native-country']
 
-  serving_input_fn = input_fn_maker.build_default_transforming_serving_input_fn(
-            raw_metadata=raw_metadata,
-            transform_savedmodel_dir=serving_graph_dir + '/transform_fn',
-            raw_label_keys=[],
-            raw_feature_keys=in_columns)
-  estimator.export_savedmodel(serving_graph_dir, serving_input_fn)
+  if not serving_graph_dir is None:
+    serving_input_fn = input_fn_maker.build_default_transforming_serving_input_fn(
+              raw_metadata=raw_metadata,
+              transform_savedmodel_dir=serving_graph_dir + '/transform_fn',
+              raw_label_keys=[],
+              raw_feature_keys=in_columns)
+    estimator.export_savedmodel(serving_graph_dir, serving_input_fn)
 
   # Evaluate model on test dataset.
   eval_input_fn = input_fn_maker.build_training_input_fn(
@@ -317,7 +318,7 @@ def main():
   if args.serving_graph_dir:
     serving_graph_dir = args.serving_graph_dir
   else:
-      serving_graph_dir = tempfile.mkdtemp(dir=args.input_data_dir)
+      serving_graph_dir = None
 
 
   train_data_file = os.path.join(args.input_data_dir, 'adult.data')
