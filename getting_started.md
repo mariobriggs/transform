@@ -334,6 +334,15 @@ in two places: reading the data from the CSV file, and as an input to
 in-memory format need to be paired with a schema in order to interpret them as
 tensors.
 
+The code to write the transform function to disk is shown below. The 
+`WriteTransformFn` writes the transform function under folders named transform_fn
+and transformed_metadata of the specified input folder.
+
+```
+_ = (transform_fn
+           | 'WriteTransformFn' >> tft_beam_io.WriteTransformFn(transform_graph_dir))
+```
+
 The final stage is to write the transformed data to disk, which has a similar
 form to the reading of the raw data. The schema used to do this is part of the
 output of `AnalyzeAndTransformDataset`. That is `AnalyzeAndTransformDataset`
@@ -419,6 +428,22 @@ train_input_fn = input_fn_maker.build_training_input_fn(
     PREPROCESSED_TRAIN_DATA + '*',
     training_batch_size=TRAIN_BATCH_SIZE,
     label_keys=['label'])
+```
+
+## Integration with TensorFlow Serving
+To the `transform_savedmodel_dir` parameter of the 
+`build_default_transforming_serving_input_fn` we specify the
+`transform_fn` folder under the folder where we earlier saved the trasform
+ function. We also specify a dict of the ordered input columns 
+in the `raw_feature_keys` parameter and the corresponding metadata 
+
+```
+serving_input_fn = input_fn_maker.build_default_transforming_serving_input_fn(
+              raw_metadata=raw_metadata,
+              transform_savedmodel_dir=serving_graph_dir + '/transform_fn',
+              raw_label_keys=[],
+              raw_feature_keys=in_columns)
+estimator.export_savedmodel(serving_graph_dir, serving_input_fn)
 ```
 
 The rest of the code is the same as the usual use of the `Estimator` class, see
