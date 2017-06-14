@@ -64,38 +64,20 @@ NUM_TRAIN_INSTANCES = 32561
 NUM_TEST_INSTANCES = 16281
 BUCKET_SIZES = [9, 17, 8, 15, 17, 6, 3, 43]
 
-WKCLASS_COL = 'workclass'
-EDN_COL = 'education'
-MSTAT_COL = 'marital-status'
-OCC_COL = 'occupation'
-REL_COL = 'relationship'
-RACE_COL = 'race'
-SEX_COL = 'sex'
-NCTRY_COL = 'native-country'
-AGE_COLUMN = 'age'
-EDNUM_COLUMN = 'education-num'
-CGAIN_COLUMN = 'capital-gain'
-CLOSS_COLUMN = 'capital-loss'
-HPW_COLUMN = 'hours-per-week'
-
-input_schema = dataset_schema.from_feature_spec({
-    WKCLASS_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
-    EDN_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
-    MSTAT_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
-    OCC_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
-    REL_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
-    RACE_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
-    SEX_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
-    NCTRY_COL: tf.FixedLenFeature(shape=[], dtype=tf.string),
-    AGE_COLUMN: tf.FixedLenFeature(shape=[], dtype=tf.float32),
-    EDNUM_COLUMN: tf.FixedLenFeature(shape=[], dtype=tf.float32),
-    CGAIN_COLUMN: tf.FixedLenFeature(shape=[], dtype=tf.float32),
-    CLOSS_COLUMN: tf.FixedLenFeature(shape=[], dtype=tf.float32),
-    HPW_COLUMN: tf.FixedLenFeature(shape=[], dtype=tf.float32),
-    LABEL_COLUMN: tf.FixedLenFeature(shape=[], dtype=tf.string)
+raw_data_schema = {
+    key: dataset_schema.ColumnSchema(
+        tf.string, [], dataset_schema.FixedColumnRepresentation())
+    for key in CATEGORICAL_COLUMNS
+}
+raw_data_schema.update({
+    key: dataset_schema.ColumnSchema(
+        tf.float32, [], dataset_schema.FixedColumnRepresentation())
+    for key in NUMERIC_COLUMNS
 })
-raw_metadata = dataset_metadata.DatasetMetadata(schema=input_schema)
-
+raw_data_schema[LABEL_COLUMN] = dataset_schema.ColumnSchema(
+    tf.string, [], dataset_schema.FixedColumnRepresentation())
+raw_data_schema = dataset_schema.Schema(raw_data_schema)
+raw_data_metadata = dataset_metadata.DatasetMetadata(raw_data_schema)
 
 def transform_data(train_data_file, test_data_file,
                    transformed_train_filebase, transformed_test_filebase,
@@ -117,19 +99,6 @@ def transform_data(train_data_file, test_data_file,
         should be written
     transform_graph_dir: dir where the beam tf graph should be written
   """
-  raw_data_schema = {
-      key: dataset_schema.ColumnSchema(
-          tf.string, [], dataset_schema.FixedColumnRepresentation())
-      for key in CATEGORICAL_COLUMNS
-  }
-  raw_data_schema.update({
-      key: dataset_schema.ColumnSchema(
-          tf.float32, [], dataset_schema.FixedColumnRepresentation())
-      for key in NUMERIC_COLUMNS
-  })
-  raw_data_schema[LABEL_COLUMN] = dataset_schema.ColumnSchema(
-      tf.string, [], dataset_schema.FixedColumnRepresentation())
-  raw_data_schema = dataset_schema.Schema(raw_data_schema)
 
   def preprocessing_fn(inputs):
     """Preprocess input columns into transformed columns."""
@@ -186,7 +155,7 @@ def transform_data(train_data_file, test_data_file,
       # Combine data and schema into a dataset tuple.  Note that we already used
       # the schema to read the CSV data, but we also need it to interpret
       # raw_data.
-      raw_dataset = (raw_data, raw_metadata)
+      raw_dataset = (raw_data, raw_data_metadata)
       transformed_dataset, transform_fn = (
           raw_dataset | beam_impl.AnalyzeAndTransformDataset(preprocessing_fn))
 
@@ -216,7 +185,7 @@ def transform_data(train_data_file, test_data_file,
           | 'RemoveTrailingPeriodsTestData' >> beam.Map(lambda line: line[:-1])
           | 'DecodeTestData' >> beam.Map(converter.decode))
 
-      raw_test_dataset = (raw_test_data, raw_metadata)
+      raw_test_dataset = (raw_test_data, raw_data_metadata)
 
       transformed_test_dataset = (
           (raw_test_dataset, transform_fn) | beam_impl.TransformDataset())
@@ -284,7 +253,7 @@ def train_and_evaluate(transformed_train_filepattern,
 
   if not serving_graph_dir is None:
     serving_input_fn = input_fn_maker.build_default_transforming_serving_input_fn(
-              raw_metadata=raw_metadata,
+              raw_metadata=raw_data_metadata,
               transform_savedmodel_dir=serving_graph_dir + '/transform_fn',
               raw_label_keys=[],
               raw_feature_keys=in_columns)
